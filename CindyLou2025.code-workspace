@@ -1,13 +1,6 @@
 {
 	"folders": [
 		{
-			"path": "../../../Arduino/Grinch2024"
-		},
-		{
-			"name": "Blinky",
-			"path": "../Blinky"
-		},
-		{
 			"name": "Grinch v1.0",
 			"path": "."
 		}
