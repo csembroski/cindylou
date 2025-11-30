@@ -6,7 +6,7 @@
 #define NUM_LEDS_ORNAMENT 50 // Number of LEDs on ornament
 #define DATA_PIN_BODY 4  // Teensy connection for body
 #define DATA_PIN_ORNAMENT 3  // Teensy connection for ornament
-#define BRIGHTNESS 255   // Brightness of LEDs (0-255)
+#define BRIGHTNESS 63   // Brightness of LEDs (0-255)
 #define LED_TYPE WS2811  // LED type
 #define COLOR_ORDER RGB  // Color order for WS2811 LEDs
 
@@ -195,91 +195,58 @@ void flashSegment(const char *segmentName, int time = 100, bool clear = false)
 }
 
 // Simple chase effect across a named segment
-void chaseSegment(const char *segmentName, int timePerLED = 100, int cycles = 2)
+struct SimpleChaseState
 {
-  int segmentIdx = getSegmentIndexByName(segmentName);
-  if (segmentIdx < 0)
+  LED_SEGMENT_RANGE *segment = nullptr;
+  int step = 1;
+  int length = 0;
+  int offset = 0;
+  int prevPos = -1;
+  bool hasPrev = false;
+};
+
+bool initChaseState(const char *segmentName, SimpleChaseState &state)
+{
+  int idx = getSegmentIndexByName(segmentName);
+  if (idx < 0)
   {
-    return;
+    return false;
   }
 
-  LED_SEGMENT_RANGE &segment = ledSegments[segmentIdx];
-  int step = (segment.start_index <= segment.end_index) ? 1 : -1;
-
-  for (int c = 0; c < cycles; ++c)
-  {
-    for (int j = segment.start_index;; j += step)
-    {
-      segment.led_array[j] = segment.defaultColor;
-      FastLED.show();
-      delay(timePerLED);
-      segment.led_array[j] = CRGB::Black;
-
-      if (j == segment.end_index)
-      {
-        break;
-      }
-    }
-  }
+  LED_SEGMENT_RANGE &segment = ledSegments[idx];
+  state.segment = &segment;
+  state.step = (segment.start_index <= segment.end_index) ? 1 : -1;
+  state.length = (state.step == 1) ? (segment.end_index - segment.start_index + 1) : (segment.start_index - segment.end_index + 1);
+  state.offset = 0;
+  state.prevPos = -1;
+  state.hasPrev = false;
+  return true;
 }
 
-// Chase two segments in parallel
-void chaseSegmentsTogether(const char *segmentNameA, const char *segmentNameB, int timePerLED = 100, int cycles = 2)
+// Advance one step of a chase; returns true if LEDs changed and sets wrapped when we loop
+bool advanceChase(SimpleChaseState &state, bool &wrapped)
 {
-  int idxA = getSegmentIndexByName(segmentNameA);
-  int idxB = getSegmentIndexByName(segmentNameB);
-  if (idxA < 0 || idxB < 0)
+  wrapped = false;
+  if (!state.segment || state.length <= 0)
   {
-    return;
+    return false;
   }
 
-  LED_SEGMENT_RANGE &segA = ledSegments[idxA];
-  LED_SEGMENT_RANGE &segB = ledSegments[idxB];
+  LED_SEGMENT_RANGE &segment = *state.segment;
 
-  int stepA = (segA.start_index <= segA.end_index) ? 1 : -1;
-  int stepB = (segB.start_index <= segB.end_index) ? 1 : -1;
+  int pos = segment.start_index + state.offset * state.step;
+  segment.led_array[pos] = segment.defaultColor;
 
-  int lenA = (stepA == 1) ? (segA.end_index - segA.start_index + 1) : (segA.start_index - segA.end_index + 1);
-  int lenB = (stepB == 1) ? (segB.end_index - segB.start_index + 1) : (segB.start_index - segB.end_index + 1);
-  int maxLen = (lenA > lenB) ? lenA : lenB;
-
-  for (int c = 0; c < cycles; ++c)
+  if (state.hasPrev && state.prevPos != pos)
   {
-    for (int n = 0; n < maxLen; ++n)
-    {
-      bool litA = false;
-      bool litB = false;
-
-      if (n < lenA)
-      {
-        int posA = segA.start_index + n * stepA;
-        segA.led_array[posA] = segA.defaultColor;
-        litA = true;
-      }
-
-      if (n < lenB)
-      {
-        int posB = segB.start_index + n * stepB;
-        segB.led_array[posB] = segB.defaultColor;
-        litB = true;
-      }
-
-      FastLED.show();
-      delay(timePerLED);
-
-      if (litA)
-      {
-        int posA = segA.start_index + n * stepA;
-        segA.led_array[posA] = CRGB::Black;
-      }
-
-      if (litB)
-      {
-        int posB = segB.start_index + n * stepB;
-        segB.led_array[posB] = CRGB::Black;
-      }
-    }
+    segment.led_array[state.prevPos] = CRGB::Black;
   }
+
+  state.prevPos = pos;
+  state.hasPrev = true;
+  state.offset = (state.offset + 1) % state.length;
+  wrapped = (state.offset == 0);
+  return true;
 }
 
 // Leave an entire segment lit with its default color
@@ -305,33 +272,118 @@ void setSegmentOn(const char *segmentName)
 
 void warmUp()
 {
-  Serial.print("warmUp\n");
+  Serial.print("warmUp\\n");
   FastLED.clear(true);
-  flashSegment("LEFT_EYE");
-  flashSegment("RIGHT_EYE");
-  flashSegment("NOSE");
-  flashSegment("MOUTH");
-  flashSegment("HAIR_0");
-  flashSegment("HAIR_1");
-  flashSegment("LEFT_BOW");
-  flashSegment("RIGHT_BOW");
-  flashSegment("LEFT_ANTENNA");
-  flashSegment("RIGHT_ANTENNA");
-  flashSegment("DRESS");
-  flashSegment("ORNAMENT_0");
-  flashSegment("ORNAMENT_1");
-  flashSegment("ORNAMENT_2");
-  flashSegment("ORNAMENT_3");
-  flashSegment("ORNAMENT_4");
-  // Chase both antenna segments in parallel at the end of warmup
-  chaseSegmentsTogether("LEFT_ANTENNA", "RIGHT_ANTENNA", 150, 6);
+
+  // Initialize antenna chase state
+  SimpleChaseState leftChase{};
+  SimpleChaseState rightChase{};
+  initChaseState("LEFT_ANTENNA", leftChase);
+  initChaseState("RIGHT_ANTENNA", rightChase);
+
+  const char *sequence[] = {
+      "LEFT_EYE",
+      "RIGHT_EYE",
+      "NOSE",
+      "MOUTH",
+      "HAIR_0",
+      "HAIR_1",
+      "LEFT_BOW",
+      "RIGHT_BOW",
+      "DRESS",
+      "ORNAMENT_0",
+      "ORNAMENT_1",
+      "ORNAMENT_2",
+      "ORNAMENT_3",
+      "ORNAMENT_4"};
+
+  const int sequenceCount = sizeof(sequence) / sizeof(sequence[0]);
+  const unsigned long chaseInterval = 100; // ms per antenna step
+  const unsigned long flashDuration = 250; // ms each segment stays on before moving on
+  unsigned long lastChase = millis();
+  bool leftFrozen = false;
+
+  for (int s = 0; s < sequenceCount; ++s)
+  {
+    int idx = getSegmentIndexByName(sequence[s]);
+    if (idx < 0)
+    {
+      continue;
+    }
+
+    LED_SEGMENT_RANGE &segment = ledSegments[idx];
+    int step = (segment.start_index <= segment.end_index) ? 1 : -1;
+    for (int j = segment.start_index;; j += step)
+    {
+      segment.led_array[j] = segment.defaultColor;
+      if (j == segment.end_index)
+      {
+        break;
+      }
+    }
+    FastLED.show();
+
+    unsigned long start = millis();
+    while (millis() - start < flashDuration)
+    {
+      unsigned long now = millis();
+      bool updated = false;
+      bool rightWrapped = false;
+      bool leftWrapped = false;
+      if (now - lastChase >= chaseInterval)
+      {
+        if (!leftFrozen)
+        {
+          updated |= advanceChase(leftChase, leftWrapped);
+          if (leftWrapped)
+          {
+            leftFrozen = true; // Hold on the last LED until the right antenna wraps
+          }
+        }
+        updated |= advanceChase(rightChase, rightWrapped);
+
+        // When the longer (right) antenna wraps, restart the left as well
+        if (rightWrapped)
+        {
+          // Clear the left antenna before restarting it
+          if (leftChase.segment)
+          {
+            LED_SEGMENT_RANGE &seg = *leftChase.segment;
+            int stepClear = (seg.start_index <= seg.end_index) ? 1 : -1;
+            for (int j = seg.start_index;; j += stepClear)
+            {
+              seg.led_array[j] = CRGB::Black;
+              if (j == seg.end_index)
+              {
+                break;
+              }
+            }
+          }
+
+          leftChase.offset = 0;
+          leftChase.prevPos = -1;
+          leftChase.hasPrev = false;
+          leftFrozen = false;
+        }
+
+        lastChase = now;
+      }
+
+      if (updated)
+      {
+        FastLED.show();
+      }
+      delay(5);
+    }
+  }
+
   // Leave antenna LEDs on after the chase
   setSegmentOn("LEFT_ANTENNA");
   setSegmentOn("RIGHT_ANTENNA");
   FastLED.show();
   delay(1000);
   FastLED.clear(true);
-  delay(100);
+  delay(1000);
 }
 
 void allOn()
@@ -362,7 +414,7 @@ void allOn()
 
 void loop()
 {
-  walkEachLED();
+  // walkEachLED();
   warmUp();
-  allOn();
+  // allOn();
 }
