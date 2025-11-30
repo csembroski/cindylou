@@ -270,6 +270,69 @@ void setSegmentOn(const char *segmentName)
   }
 }
 
+// Set an entire segment to a specific color (overrides default)
+void setSegmentColor(const char *segmentName, const CRGB &color)
+{
+  int idx = getSegmentIndexByName(segmentName);
+  if (idx < 0)
+  {
+    return;
+  }
+
+  LED_SEGMENT_RANGE &segment = ledSegments[idx];
+  int step = (segment.start_index <= segment.end_index) ? 1 : -1;
+  for (int j = segment.start_index;; j += step)
+  {
+    segment.led_array[j] = color;
+    if (j == segment.end_index)
+    {
+      break;
+    }
+  }
+}
+
+// Set a two-tone pattern on a segment (first LED colorA, second colorB, optionally swapped)
+void setSegmentTwoTone(const char *segmentName, const CRGB &colorA, const CRGB &colorB, bool swap = false)
+{
+  int idx = getSegmentIndexByName(segmentName);
+  if (idx < 0)
+  {
+    return;
+  }
+
+  LED_SEGMENT_RANGE &segment = ledSegments[idx];
+  int step = (segment.start_index <= segment.end_index) ? 1 : -1;
+  int localIndex = 0;
+  for (int j = segment.start_index;; j += step, ++localIndex)
+  {
+    bool useA = ((localIndex % 2) == 0);
+    if (swap)
+    {
+      useA = !useA;
+    }
+    segment.led_array[j] = useA ? colorA : colorB;
+    if (j == segment.end_index)
+    {
+      break;
+    }
+  }
+}
+
+// Simple ornament chase to run after warmup
+void ornamentSpin(int cycles = 1, int timePerLED = 150)
+{
+  for (int c = 0; c < cycles; ++c)
+  {
+    for (int i = 0; i < NUM_LEDS_ORNAMENT; ++i)
+    {
+      leds_ornament[i] = CRGB::Gold;
+      FastLED.show();
+      delay(timePerLED);
+      leds_ornament[i] = CRGB::Black;
+    }
+  }
+}
+
 void warmUp()
 {
   Serial.print("warmUp\\n");
@@ -288,8 +351,6 @@ void warmUp()
       "MOUTH",
       "HAIR_0",
       "HAIR_1",
-      "LEFT_BOW",
-      "RIGHT_BOW",
       "DRESS",
       "ORNAMENT_0",
       "ORNAMENT_1",
@@ -302,6 +363,10 @@ void warmUp()
   const unsigned long flashDuration = 250; // ms each segment stays on before moving on
   unsigned long lastChase = millis();
   bool leftFrozen = false;
+  bool bowsActive = false;
+  bool bowToggle = false;
+  unsigned long lastBowToggle = millis();
+  const unsigned long bowInterval = 100; // ms between bow color swaps
 
   for (int s = 0; s < sequenceCount; ++s)
   {
@@ -369,19 +434,42 @@ void warmUp()
         lastChase = now;
       }
 
+      if (bowsActive && now - lastBowToggle >= bowInterval)
+      {
+        bowToggle = !bowToggle;
+        setSegmentTwoTone("LEFT_BOW", CRGB::Aqua, CRGB::Gold, bowToggle);
+        setSegmentTwoTone("RIGHT_BOW", CRGB::Aqua, CRGB::Gold, bowToggle);
+        updated = true;
+        lastBowToggle = now;
+      }
+
       if (updated)
       {
         FastLED.show();
       }
       delay(5);
     }
+
+    // After HAIR_1, animate the bows while antennas keep chasing
+    if (!bowsActive && std::strcmp(sequence[s], "HAIR_1") == 0)
+    {
+      bowsActive = true;
+      bowToggle = false;
+      lastBowToggle = millis();
+      setSegmentTwoTone("LEFT_BOW", CRGB::Aqua, CRGB::Gold, false);
+      setSegmentTwoTone("RIGHT_BOW", CRGB::Aqua, CRGB::Gold, false);
+      FastLED.show();
+    }
   }
 
-  // Leave antenna LEDs on after the chase
+  // Leave antenna and bow LEDs on after the chase
   setSegmentOn("LEFT_ANTENNA");
   setSegmentOn("RIGHT_ANTENNA");
+  setSegmentOn("LEFT_BOW");
+  setSegmentOn("RIGHT_BOW");
   FastLED.show();
   delay(1000);
+  ornamentSpin();
   FastLED.clear(true);
   delay(1000);
 }
